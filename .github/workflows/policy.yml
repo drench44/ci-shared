@@ -1,0 +1,64 @@
+# ci-policy dogfoods its own reusable workflows: pr-policy from the commit
+# under test, main-watch from the commit before the push (see `pin`).
+name: policy
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, labeled, unlabeled, ready_for_review]
+  push:
+    branches: [main]
+  # main-watch's re-check of commits whose PR checks were still running at merge.
+  schedule:
+    - cron: 41 * * * *
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+  checks: read
+  actions: read
+  statuses: write
+  issues: write
+
+jobs:
+  pr-policy:
+    if: github.event_name == 'pull_request'
+    uses: ./.github/workflows/pr-policy.yml
+    with:
+      ci-policy-ref: ${{ github.event.pull_request.head.sha }}
+  # main-watch judges a push to main with the code and allowlist from BEFORE
+  # that push (the old tip), so a push cannot rewrite the rules it is judged
+  # by. The scheduled re-check uses the first parent of main's tip.
+  pin:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      ref: ${{ steps.pick.outputs.ref }}
+    steps:
+      - name: Pick the ci-policy ref
+        id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = push ] && printf '%s' "$BEFORE" | grep -Eqx '[0-9a-f]{40}' \
+              && [ "$BEFORE" != 0000000000000000000000000000000000000000 ]; then
+            ref="$BEFORE"
+          else
+            ref=$(gh api "repos/$REPO/commits/$SHA" --jq '.parents[0].sha')
+          fi
+          if ! printf '%s' "$ref" | grep -Eqx '[0-9a-f]{40}'; then
+            echo "::error::could not pick the ci-policy ref for main-watch (got '$ref')"
+            exit 1
+          fi
+          echo "ref=$ref" >>"$GITHUB_OUTPUT"
+  main-watch:
+    if: github.event_name != 'pull_request'
+    needs: pin
+    uses: ./.github/workflows/main-watch.yml
+    with:
+      ci-policy-ref: ${{ needs.pin.outputs.ref }}

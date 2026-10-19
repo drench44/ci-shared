@@ -1,0 +1,31 @@
+{
+  "about": "Commits allowed to reach a protected branch (main/master) without a PR, for PUBLIC repos only. Read by main-watch (CI), the global git pre-push hook, and the Claude Code push guard.  A rule matches when the commit subject matches `subject` (Python regex), the branch matches `branch` (if set), every changed file matches `paths` (if set), and no changed file matches `not_paths` (if set). No rule ever passes a commit that touches .github/** (enforced in code, whatever a rule says). Keep rules narrow: subject AND exact paths wherever the automation's file set is known. A private repo is never named here, not even by a hash: its rules live in its own .github/main-allowlist.json (read by main-watch) and in ~/.config/ci-policy/private-allowlist.json on the machines that push to it (read by the git hooks).",
+  "repos": {
+    "drench44/family-hub": [
+      {
+        "name": "release script (scripts/release.py, pushed by hand with git push --follow-tags)",
+        "branch": "main",
+        "subject": "^release: v\\d+\\.\\d+\\.\\d+$",
+        "paths": [
+          "VERSION",
+          "CHANGELOG.md",
+          "src/family_hub/web/static/index.html"
+        ]
+      }
+    ],
+    "drench44/house-climate": [
+      {
+        "name": "release script (scripts/release.py, pushed by hand with git push --follow-tags)",
+        "branch": "main",
+        "subject": "^release: v\\d+\\.\\d+\\.\\d+$",
+        "paths": [
+          "VERSION",
+          "CHANGELOG.md",
+          "src/house_climate/web/static/index.html",
+          "src/house_climate/web/static/moisture.html",
+          "src/house_climate/web/static/square.html"
+        ]
+      }
+    ]
+  }
+}

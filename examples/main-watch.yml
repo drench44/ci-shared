@@ -1,0 +1,34 @@
+# Copy to .github/workflows/main-watch.yml in a repo.
+name: main-watch
+on:
+  push:
+    branches: [main]   # [master] where that is the default
+  # Re-check commits whose PR checks were still running when the PR was merged.
+  schedule:
+    - cron: 41 * * * *
+  workflow_dispatch:
+permissions:
+  contents: read
+  pull-requests: read
+  checks: read
+  actions: read     # require-checks: auto lists the repo's workflows
+  statuses: write   # the ci-policy/main-watch status on each judged commit
+  issues: write
+jobs:
+  watch:
+    # Pin to a ci-policy commit (full SHA), and pass the same SHA as
+    # ci-policy-ref: it picks the watch code and the allowlist.
+    uses: drench44/ci-shared/.github/workflows/main-watch.yml@<full sha> # main @ <short sha>
+    with:
+      ci-policy-ref: <full sha>
+      # Private repo: your self-hosted runner labels. Public repo: '"ubuntu-latest"'.
+      runs-on: '["self-hosted"]'
+      # Optional: checks that must be present and green on every PR head.
+      # required-checks: |
+      #   Vitest (full suite)
+      # Optional: checks to leave out (globs). '*' is refused unless
+      # required-checks names what must pass.
+      # ignore-checks: Claude*
+      # Commits allowed without a PR come only from policy/main-allowlist.json
+      # in ci-shared (change it through a PR there); no rule passes a commit
+      # that touches .github/.
