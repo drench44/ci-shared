@@ -1,8 +1,12 @@
 """Static checks on this repo's workflow files (stdlib only, no YAML parser)."""
 
 import glob
+import json
 import os
 import re
+import shutil
+import subprocess
+import tempfile
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -99,6 +103,52 @@ class MainWatchWiringTests(unittest.TestCase):
         pin = text[text.index("\n  pin:"):text.index("\n  main-watch:")]
         self.assertIn("BEFORE: ${{ github.event.before }}", pin)
         self.assertIn(".parents[0].sha", pin)
+
+    def run_pin(self, event, before, parents_json, gh_fails=False):
+        """Run the pin step's script under bash with a fake gh on PATH."""
+        text = read(os.path.join(ROOT, ".github", "workflows", "policy.yml"))
+        pin = text[text.index("\n  pin:"):text.index("\n  main-watch:")]
+        body = pin[pin.index("        run: |\n") + len("        run: |\n"):]
+        script = "\n".join(l[10:] for l in body.splitlines())
+        with tempfile.TemporaryDirectory() as tmp:
+            gh = os.path.join(tmp, "gh")
+            with open(gh, "w") as f:
+                if gh_fails:
+                    f.write("#!/bin/sh\necho 'HTTP 502' >&2\nexit 1\n")
+                else:
+                    # Applies the step's own --jq to the canned commit with jq.
+                    f.write("#!/bin/sh\nwhile [ $# -gt 0 ]; do\n"
+                            "  [ \"$1\" = --jq ] && { shift; q=\"$1\"; }; shift\ndone\n"
+                            f"printf '%s' '{parents_json}' | jq -r \"$q\"\n")
+            os.chmod(gh, 0o755)
+            out = os.path.join(tmp, "out")
+            open(out, "w").close()
+            env = dict(os.environ, PATH=tmp + os.pathsep + os.environ["PATH"],
+                       REPO="o/r", EVENT=event, BEFORE=before, SHA="c" * 40,
+                       GITHUB_OUTPUT=out)
+            p = subprocess.run(["bash", "-e", "-c", script], env=env,
+                               capture_output=True, text=True)
+            return p.returncode, read(out), p.stdout
+
+    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq and bash")
+    def test_pin_picks_the_right_ref(self):
+        a, b, c = "a" * 40, "b" * 40, "c" * 40
+        one_parent = json.dumps({"parents": [{"sha": b}]})
+        root = json.dumps({"parents": []})
+        with self.subTest("push uses the old tip"):
+            self.assertEqual(self.run_pin("push", a, root)[:2], (0, f"ref={a}\n"))
+        with self.subTest("schedule uses the first parent"):
+            self.assertEqual(self.run_pin("schedule", "", one_parent)[:2], (0, f"ref={b}\n"))
+        with self.subTest("schedule on a first commit uses that commit"):
+            code, out, stdout = self.run_pin("schedule", "", root)
+            self.assertEqual((code, out), (0, f"ref={c}\n"))
+            self.assertIn("::notice::", stdout)
+        with self.subTest("a new branch push falls back to the parent"):
+            self.assertEqual(self.run_pin("push", "0" * 40, one_parent)[:2], (0, f"ref={b}\n"))
+        with self.subTest("a failed lookup fails the job, never pins itself"):
+            code, out, _ = self.run_pin("schedule", "", root, gh_fails=True)
+            self.assertNotEqual(code, 0)
+            self.assertEqual(out, "")
 
     def test_callers_schedule_the_recheck(self):
         for caller in [os.path.join(ROOT, "examples", "main-watch.yml"),
