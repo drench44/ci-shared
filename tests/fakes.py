@@ -84,9 +84,10 @@ class ActionsEnv:
         for k, v in env.items():
             self._saved[k] = os.environ.get(k)
             os.environ[k] = v
-        # Clear inputs a previous test might have left behind.
+        # Clear inputs a previous test left behind, and the real runner's
+        # GITHUB_* values (GITHUB_WORKFLOW_REF once failed three tests in CI).
         for k in list(os.environ):
-            if k.startswith("INPUT_") and k not in env:
+            if k.startswith(("INPUT_", "GITHUB_")) and k not in env:
                 self._saved[k] = os.environ.pop(k)
         return self
 

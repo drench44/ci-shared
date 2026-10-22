@@ -1349,7 +1349,8 @@ assert_eq "$RC" 1 "(GIT_SSH: $OUT)"
 teardown
 
 leak_setup "leak: refresh refuses a list that may be cut short, odd or suddenly empty"
-export FAKE_REPOS="$(python3 -c 'import json; print(json.dumps([{"name": "r%d" % i, "visibility": "PRIVATE"} for i in range(1000)]))')"
+FAKE_REPOS="$(python3 -c 'import json; print(json.dumps([{"name": "r%d" % i, "visibility": "PRIVATE"} for i in range(1000)]))')"
+export FAKE_REPOS
 OUT=$("$HOME/.config/ci-policy/bin/ci-policy" refresh-private 2>&1); RC=$?
 assert_eq "$RC" 1 "(1000 repos, the limit: $OUT)"
 assert_contains "$OUT" "cut short"

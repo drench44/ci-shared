@@ -49,7 +49,14 @@ jobs:
               && [ "$BEFORE" != 0000000000000000000000000000000000000000 ]; then
             ref="$BEFORE"
           else
-            ref=$(gh api "repos/$REPO/commits/$SHA" --jq '.parents[0].sha')
+            ref=$(gh api "repos/$REPO/commits/$SHA" --jq '.parents[0].sha // ""')
+            # A first commit has no parent and no older rules to judge it by,
+            # so it is judged by its own. A push still uses BEFORE above, so a
+            # parentless commit force-pushed over main is judged by the old tip.
+            if [ -z "$ref" ]; then
+              echo "::notice::$SHA has no parent; main-watch runs its own code"
+              ref="$SHA"
+            fi
           fi
           if ! printf '%s' "$ref" | grep -Eqx '[0-9a-f]{40}'; then
             echo "::error::could not pick the ci-policy ref for main-watch (got '$ref')"
