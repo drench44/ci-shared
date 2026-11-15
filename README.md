@@ -292,6 +292,50 @@ the same user outside `~/workspace`) untouched.
   file; `--uninstall` removes it); when either cannot be read, the push is
   refused. Humans
   can break glass for one push with `CI_POLICY_ALLOW_LEAK=1`.
+- **Public push checks** (machine-local, off until configured). Every push
+  to a destination the leak check counts as public (anything but a path on
+  this machine or a GitHub repo confirmed private) also runs these, in every
+  repo on the machine. Both settings are read from the global git config
+  only, so a repo's own config can neither turn them on nor off, and nothing
+  about them lives in any repo:
+  - `ci-policy.forbiddenIdentity <text>` (repeatable, or
+    `--forbid-identity <text>` at install): no pushed commit may contain
+    `<text>`, ignoring case, in its author name, author email, committer
+    name, committer email (the raw values GitHub shows, not `.mailmap`'s)
+    or message (so a `Co-authored-by` trailer counts), and no pushed
+    annotated tag may contain it in its tagger line or message. Content scans never see these fields. Typical values are a
+    personal email address, or `<login>@`, which catches the `login@host.lan`
+    address git makes up on a machine with no `user.email` set. It still
+    runs on destinations the skip list below spares.
+  - `ci-policy.publicPushScanner <absolute path>` (repeatable, or
+    `--public-push-scanner <path>` at install): runs once per pushed ref as
+    `<path> --push <repo top level> <rev-list words...>`, where the words name
+    exactly the commits that ref brings, the same range the leak check reads
+    (`<old>..<new>`, `<new> --not --remotes=origin`, or `<new> --not <tips>`
+    read live from the destination). Its stdin is empty and its output goes
+    to the terminal. Exit 0 passes; any other exit refuses the push. It fails
+    closed: a scanner that is missing, not executable, not an absolute path,
+    or still running after 15 minutes (`CI_POLICY_SCANNER_TIMEOUT` may only
+    lower that) refuses the push, and `--check` reports
+    it as a problem.
+  - `ci-policy.publicPushScannerSkip <owner/name glob>` (repeatable): the
+    extra scanner is not run when every public destination is a GitHub repo
+    matching one of these, ignoring case (for example a fork of someone
+    else's project whose existing content the scanner would always flag).
+    The identity check and the leak check still run there.
+
+  Once configured, the scanners and identities are also kept in
+  `~/.config/ci-policy/public-checks.txt` (mode 600, kept by a reinstall),
+  like the leak check's `owners.txt`, and the hook enforces the union of the
+  two. Unsetting the git config alone (a fresh dotfile, a stray `--unset`)
+  therefore never turns a check off silently; `--check` notes a kept value
+  the git config lost. Turning one off means removing it from both. A blank
+  `publicPushScanner` value or a kept file that cannot be read refuses the
+  push.
+
+  `CI_POLICY_ALLOW_LEAK=1` breaks glass for one push. A repo whose own
+  pre-push hook runs the same scanner scans twice; that is slower, never
+  weaker.
 - **Chaining.** `core.hooksPath` makes git ignore `.git/hooks`, which would
   silently turn off each repo's own hooks. Every wrapper runs the repo's hook
   of the same name after the policy passes, with the same arguments and stdin.

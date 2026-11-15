@@ -1412,5 +1412,303 @@ push origin work
 assert_eq "$RC" 0 "$OUT"
 teardown
 
+# ---- public push checks: forbidden identities and an extra scanner ----------
+# leak_setup's world (acme/pubapp public, acme/secret-proj private), plus a fake
+# scanner that records how it was called and exits $FAKE_SCAN_EXIT.
+scan_setup() {
+  leak_setup "$1"
+  cat >"$T/bin/scanner" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" >"$FAKE_SCAN_LOG"
+printf 'call %s\n' "$*" >>"$FAKE_SCAN_LOG.all"
+cat >"$FAKE_SCAN_LOG.stdin"
+[ -n "${FAKE_SCAN_SLEEP:-}" ] && sleep "$FAKE_SCAN_SLEEP"
+echo "fake scanner: called"
+exit "${FAKE_SCAN_EXIT:-0}"
+EOF
+  chmod 755 "$T/bin/scanner"
+  export FAKE_SCAN_LOG="$T/scan.log"
+  rm -f "$FAKE_SCAN_LOG" "$FAKE_SCAN_LOG.all"
+  unset FAKE_SCAN_EXIT FAKE_SCAN_SLEEP CI_POLICY_SCANNER_TIMEOUT GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
+}
+# icommit FILE VAR=VALUE...: a commit on branch $B (w-<file>) with those
+# identity variables set for that one commit only.
+icommit() {
+  local f="$1"; shift
+  B="w-${f%%.*}"
+  git -C "$R" switch -q -C "$B" main
+  printf 'plain %s\n' "$f" >"$R/$f"; git -C "$R" add -- "$f"
+  env "$@" git -C "$R" commit -q --no-verify -m "plain $f"
+}
+
+scan_setup "public scan: off by default, so a personal identity passes"
+icommit a.txt GIT_AUTHOR_EMAIL=jane.doe@example.org
+push origin "$B"
+assert_eq "$RC" 0 "$OUT"
+teardown
+
+scan_setup "public scan: a forbidden author or committer name or email is refused"
+git config --global --add ci-policy.forbiddenIdentity "Jane.Doe@Example.ORG"
+git config --global --add ci-policy.forbiddenIdentity "Jane Q"
+icommit a.txt GIT_AUTHOR_EMAIL=jane.doe@example.org
+push origin "$B"
+assert_eq "$RC" 1 "(author email, any case: $OUT)"
+assert_contains "$OUT" "author email 'jane.doe@example.org'"
+icommit b.txt GIT_COMMITTER_EMAIL=x.jane.doe@example.org.au
+push origin "$B"
+assert_eq "$RC" 1 "(committer email, as a substring: $OUT)"
+assert_contains "$OUT" "committer email"
+icommit c.txt "GIT_AUTHOR_NAME=Jane Q Public"
+push origin "$B"
+assert_eq "$RC" 1 "(author name: $OUT)"
+icommit d.txt "GIT_COMMITTER_NAME=jane q"
+push origin "$B"
+assert_eq "$RC" 1 "(committer name: $OUT)"
+icommit e.txt GIT_AUTHOR_EMAIL=someone@example.org
+push origin "$B"
+assert_eq "$RC" 0 "(a clean identity: $OUT)"
+git config --global --add ci-policy.forbiddenIdentity "jdoe@"
+icommit f.txt GIT_COMMITTER_EMAIL=jdoe@laptop7.lan
+push origin "$B"
+assert_eq "$RC" 1 "(a made-up login@host address: $OUT)"
+icommit g.txt GIT_AUTHOR_EMAIL=1234+jdoe42@users.noreply.example
+push origin "$B"
+assert_eq "$RC" 0 "(login@ does not match a longer login: $OUT)"
+teardown
+
+scan_setup "public scan: a bad identity in the middle of a push is refused; glass breaks"
+git config --global --add ci-policy.forbiddenIdentity "jane.doe@example.org"
+icommit a.txt GIT_AUTHOR_EMAIL=jane.doe@example.org
+printf 'more\n' >>"$R/a.txt"; git -C "$R" add a.txt; git -C "$R" commit -q --no-verify -m tip
+push origin "$B"
+assert_eq "$RC" 1 "(middle commit: $OUT)"
+OUT=$(CI_POLICY_ALLOW_LEAK=1 git -C "$R" push origin "$B" 2>&1); RC=$?
+assert_eq "$RC" 0 "(break glass: $OUT)"
+assert_contains "$OUT" "WARNING"
+teardown
+
+scan_setup "public scan: a tagger is checked; private and local destinations are not"
+git config --global --add ci-policy.forbiddenIdentity "jane.doe@example.org"
+git -C "$R" -c user.email=jane.doe@example.org tag -a v1 -m "release"
+push origin v1
+assert_eq "$RC" 1 "(annotated tag by a forbidden tagger: $OUT)"
+assert_contains "$OUT" "tag 'refs/tags/v1'"
+icommit a.txt GIT_AUTHOR_EMAIL=jane.doe@example.org
+push "$T/origin.git" "$B"
+assert_eq "$RC" 0 "(a path on this machine: $OUT)"
+sshremote "git@github.com:acme/secret-proj.git"
+push origin "$B"
+assert_eq "$RC" 0 "(a confirmed private repo: $OUT)"
+export FAKE_NOW_PUBLIC="pubapp secret-proj"
+python3 -c 'import os, sys, time; t = time.time() - 1800; os.utime(sys.argv[1], (t, t))' \
+  "$HOME/.config/ci-policy/visibility.json"
+icommit b.txt GIT_AUTHOR_EMAIL=jane.doe@example.org
+push origin "$B"
+assert_eq "$RC" 1 "(made public since the last refresh: $OUT)"
+unset FAKE_NOW_PUBLIC
+teardown
+
+scan_setup "public scan: the scanner gets --push, the repo and the exact range, never stdin"
+git config --global --add ci-policy.publicPushScanner "$T/bin/scanner"
+lcommit a.txt "plain" "plain"
+push origin "$B"
+assert_eq "$RC" 0 "$OUT"
+assert_contains "$OUT" "fake scanner: called"
+args=$(tr '\n' ' ' <"$FAKE_SCAN_LOG")
+assert_eq "$args" "--push $(cd "$R" && pwd -P) $(git -C "$R" rev-parse HEAD) --not --remotes=origin " \
+  "(a new branch: everything origin does not have)"
+assert_eq "$(cat "$FAKE_SCAN_LOG.stdin")" "" "(the scanner must not read the ref lines)"
+old=$(git -C "$R" rev-parse HEAD)
+printf 'more\n' >>"$R/a.txt"; git -C "$R" add a.txt; git -C "$R" commit -q --no-verify -m two
+push origin "$B"
+assert_eq "$(tr '\n' ' ' <"$FAKE_SCAN_LOG")" \
+  "--push $(cd "$R" && pwd -P) $old..$(git -C "$R" rev-parse HEAD) " "(an update: old..new)"
+teardown
+
+scan_setup "public scan: a scanner that refuses, is missing, relative or local-only fails closed"
+git config --global --add ci-policy.publicPushScanner "$T/bin/scanner"
+lcommit a.txt "plain" "plain"
+export FAKE_SCAN_EXIT=1
+push origin "$B"
+assert_eq "$RC" 1 "(scanner exit 1: $OUT)"
+assert_contains "$OUT" "refused this push (exit 1"
+export FAKE_SCAN_EXIT=2
+push origin "$B"
+assert_eq "$RC" 1 "(scanner exit 2, could not run: $OUT)"
+unset FAKE_SCAN_EXIT
+git config --global --replace-all ci-policy.publicPushScanner "$T/bin/no-such-scanner"
+push origin "$B"
+assert_eq "$RC" 1 "(missing scanner: $OUT)"
+assert_contains "$OUT" "missing or not executable"
+git config --global --replace-all ci-policy.publicPushScanner "bin/scanner"
+push origin "$B"
+assert_eq "$RC" 1 "(relative scanner path: $OUT)"
+assert_contains "$OUT" "not an absolute path"
+git config --global --unset-all ci-policy.publicPushScanner
+rm -f "$HOME/.config/ci-policy/public-checks.txt"
+git -C "$R" config ci-policy.publicPushScanner "$T/bin/no-such-scanner"
+git -C "$R" config ci-policy.forbiddenIdentity "t@example.com"
+push origin "$B"
+assert_eq "$RC" 0 "(repo-local config is ignored: only the global config counts: $OUT)"
+git config --global --add ci-policy.publicPushScanner "$T/bin/scanner"
+git -C "$R" config ci-policy.publicPushScanner ""
+printf 'more\n' >>"$R/a.txt"; git -C "$R" add a.txt; git -C "$R" commit -q --no-verify -m two
+push origin "$B"
+assert_eq "$RC" 0 "$OUT"
+assert_contains "$OUT" "fake scanner: called" "(a repo cannot switch the global scanner off)"
+teardown
+
+scan_setup "public scan: a forbidden identity in a message trailer is refused"
+git config --global --add ci-policy.forbiddenIdentity "jane.doe@example.org"
+git -C "$R" switch -q -C w-trailer main
+echo x >"$R/t.txt"; git -C "$R" add t.txt
+git -C "$R" commit -q --no-verify -m "pair work" -m "Co-authored-by: Jane <jane.doe@example.org>"
+push origin w-trailer
+assert_eq "$RC" 1 "$OUT"
+assert_contains "$OUT" "message line 'Co-authored-by: Jane <jane.doe@example.org>'"
+teardown
+
+scan_setup "public scan: unsetting the git config alone does not turn the checks off"
+git config --global --add ci-policy.forbiddenIdentity "jane.doe@example.org"
+git config --global --add ci-policy.publicPushScanner "$T/bin/scanner"
+lcommit a.txt "plain" "plain"
+push origin "$B"
+assert_eq "$RC" 0 "(first push records the checks: $OUT)"
+assert_eq "$(stat -c %a "$HOME/.config/ci-policy/public-checks.txt" 2>/dev/null || stat -f %Lp "$HOME/.config/ci-policy/public-checks.txt")" "600"
+git config --global --unset-all ci-policy.forbiddenIdentity
+git config --global --unset-all ci-policy.publicPushScanner
+icommit b.txt GIT_AUTHOR_EMAIL=jane.doe@example.org
+push origin "$B"
+assert_eq "$RC" 1 "(the kept identity still blocks: $OUT)"
+assert_contains "$OUT" "fake scanner: called" "(the kept scanner still runs)"
+install --check
+assert_contains "$OUT" "public push scanner: $T/bin/scanner"
+assert_contains "$OUT" "still enforced"
+install
+push origin "$B"
+assert_eq "$RC" 1 "(a reinstall keeps the kept copy: $OUT)"
+rm "$HOME/.config/ci-policy/public-checks.txt"
+push origin "$B"
+assert_eq "$RC" 0 "(off once both are removed: $OUT)"
+teardown
+
+scan_setup "public scan: a blank scanner value or an unreadable kept copy refuses"
+git config --global --add ci-policy.publicPushScanner ""
+lcommit a.txt "plain" "plain"
+push origin "$B"
+assert_eq "$RC" 1 "(blank scanner: $OUT)"
+assert_contains "$OUT" "empty value"
+git config --global --unset-all ci-policy.publicPushScanner
+printf 'garbled line\n' >"$HOME/.config/ci-policy/public-checks.txt"
+push origin "$B"
+assert_eq "$RC" 1 "(a kept copy that cannot be read: $OUT)"
+assert_contains "$OUT" "cannot read the line"
+teardown
+
+scan_setup "public scan: one scanner call per pushed ref; deletions are not scanned"
+git config --global --add ci-policy.publicPushScanner "$T/bin/scanner"
+git config --global --add ci-policy.forbiddenIdentity "jane.doe@example.org"
+git -C "$R" switch -q -c two-a main; echo a >"$R/a2.txt"; git -C "$R" add a2.txt; git -C "$R" commit -q --no-verify -m a
+git -C "$R" switch -q -c two-b main; echo b >"$R/b2.txt"; git -C "$R" add b2.txt; git -C "$R" commit -q --no-verify -m b
+push origin two-a two-b
+assert_eq "$RC" 0 "$OUT"
+assert_eq "$(grep -c '^call ' "$FAKE_SCAN_LOG.all")" 2 "(two refs, two scanner calls)"
+push origin :two-a
+assert_eq "$RC" 0 "(deleting a branch: $OUT)"
+assert_eq "$(grep -c '^call ' "$FAKE_SCAN_LOG.all")" 2 "(a deletion brings nothing, so no scanner call)"
+teardown
+
+scan_setup "public scan: a scanner that cannot start or hangs refuses the push"
+printf '#!/no/such/interpreter\n' >"$T/bin/broken"; chmod 755 "$T/bin/broken"
+git config --global --add ci-policy.publicPushScanner "$T/bin/broken"
+lcommit a.txt "plain" "plain"
+push origin "$B"
+assert_eq "$RC" 1 "(bad interpreter: $OUT)"
+assert_contains "$OUT" "could not run"
+git config --global --replace-all ci-policy.publicPushScanner "$T/bin/scanner"
+rm -f "$HOME/.config/ci-policy/public-checks.txt"
+export CI_POLICY_SCANNER_TIMEOUT=1 FAKE_SCAN_SLEEP=4
+push origin "$B"
+assert_eq "$RC" 1 "(a hung scanner: $OUT)"
+assert_contains "$OUT" "did not finish in 1 s"
+export CI_POLICY_SCANNER_TIMEOUT=99999 FAKE_SCAN_SLEEP=0
+push origin "$B"
+assert_eq "$RC" 0 "(the env can lower the limit, never break it: $OUT)"
+unset CI_POLICY_SCANNER_TIMEOUT FAKE_SCAN_SLEEP
+teardown
+
+scan_setup "public scan: a non-GitHub destination is never spared by the skip list"
+sshremote "git@example.org:acme/pubapp.git"
+git config --global --add ci-policy.publicPushScanner "$T/bin/scanner"
+git config --global --add ci-policy.publicPushScannerSkip "*"
+lcommit a.txt "plain" "plain"
+push origin "$B"
+assert_eq "$RC" 0 "$OUT"
+assert_contains "$OUT" "fake scanner: called" "(another host is scanned even with a * skip)"
+teardown
+
+scan_setup "public scan: a forbidden identity in a message matches without case"
+git config --global --add ci-policy.forbiddenIdentity "jane.doe@example.org"
+git -C "$R" switch -q -C w-case main
+echo x >"$R/t.txt"; git -C "$R" add t.txt
+git -C "$R" commit -q --no-verify -m "pair work" -m "Signed-off-by: J <JANE.DOE@EXAMPLE.ORG>"
+push origin w-case
+assert_eq "$RC" 1 "$OUT"
+teardown
+
+scan_setup "public scan: the skip list spares only destinations that all match it"
+git config --global --add ci-policy.publicPushScanner "$T/bin/scanner"
+git config --global --add ci-policy.forbiddenIdentity "jane.doe@example.org"
+export FAKE_SCAN_EXIT=1
+git config --global --add ci-policy.publicPushScannerSkip "ACME/pub*"
+lcommit a.txt "plain" "plain"
+push origin "$B"
+assert_eq "$RC" 0 "(a skipped destination: $OUT)"
+assert_contains "$OUT" "publicPushScanner skipped"
+icommit b.txt GIT_AUTHOR_EMAIL=jane.doe@example.org
+push origin "$B"
+assert_eq "$RC" 1 "(the identity check still runs on a skipped destination: $OUT)"
+icommit c.txt
+git -C "$R" remote set-url --add --push origin "git@github.com:acme/other.git"
+git -C "$R" remote set-url --add --push origin "git@github.com:acme/pubapp.git"
+export FAKE_NOW_PUBLIC="pubapp other"
+push origin "$B"
+assert_eq "$RC" 1 "(a second public destination off the list is scanned: $OUT)"
+assert_contains "$OUT" "refused this push"
+unset FAKE_SCAN_EXIT FAKE_NOW_PUBLIC
+teardown
+
+setup "public scan: on without a private owner configured"
+install
+mkdir -p "$T/bin"; printf '#!/usr/bin/env bash\nexit 1\n' >"$T/bin/gh"; chmod 755 "$T/bin/gh"
+export PATH="$T/bin:$PATH"
+sshremote "git@github.com:acme/pubapp.git"
+git config --global --add ci-policy.forbiddenIdentity "t@example.com"
+git -C "$R" switch -q -c work
+echo x >"$R/a.txt"; git -C "$R" add a.txt; git -C "$R" commit -q --no-verify -m work
+push origin work
+assert_eq "$RC" 1 "$OUT"
+assert_contains "$OUT" "forbiddenIdentity"
+teardown
+
+setup "public scan: install sets the checks, --check reports a broken scanner"
+mkdir -p "$T/bin"; printf '#!/usr/bin/env bash\nexit 0\n' >"$T/bin/scanner"; chmod 755 "$T/bin/scanner"
+install --public-push-scanner "$T/bin/scanner" --forbid-identity jane.doe@example.org
+assert_eq "$RC" 0 "$OUT"
+assert_eq "$(git config --global --get-all ci-policy.publicPushScanner)" "$T/bin/scanner"
+assert_eq "$(git config --global --get-all ci-policy.forbiddenIdentity)" "jane.doe@example.org"
+install --public-push-scanner "$T/bin/scanner" --forbid-identity jane.doe@example.org
+assert_eq "$(git config --global --get-all ci-policy.publicPushScanner | wc -l | tr -d ' ')" 1 "(no duplicates)"
+install --check
+assert_eq "$RC" 0 "$OUT"
+assert_contains "$OUT" "public push scanner: $T/bin/scanner"
+rm "$T/bin/scanner"
+install --check
+assert_eq "$RC" 1 "$OUT"
+assert_contains "$OUT" "PROBLEM: ci-policy.publicPushScanner"
+install --public-push-scanner "$T/bin/gone"
+assert_eq "$RC" 1 "(install refuses a missing scanner: $OUT)"
+teardown
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

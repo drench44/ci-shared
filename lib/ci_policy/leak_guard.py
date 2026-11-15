@@ -337,9 +337,10 @@ def _dest_tips(dest: str, cwd: Optional[str]) -> List[str]:
     return [s for s in shas if _have_commit(s, cwd)]
 
 
-def _new_commits(local_sha: str, remote_sha: str, remote: str, cwd: Optional[str],
-                 trust_tracking: bool = False, dest: str = "") -> List[str]:
-    """Commits this ref update brings to the destination.
+def range_words(local_sha: str, remote_sha: str, remote: str, cwd: Optional[str],
+                trust_tracking: bool = False, dest: str = "") -> List[str]:
+    """`git rev-list` arguments naming the commits this ref update brings to
+    the destination.
 
     A new ref (or a remote tip this clone lacks) leaves out commits already
     there. The remote-tracking refs say what is there only when the push goes
@@ -348,13 +349,32 @@ def _new_commits(local_sha: str, remote_sha: str, remote: str, cwd: Optional[str
     cannot be, the whole history is scanned.
     """
     if remote_sha and remote_sha != ZERO and _have_commit(remote_sha, cwd):
-        return _git_out(["rev-list", f"{remote_sha}..{local_sha}"], cwd).split()
+        return [f"{remote_sha}..{local_sha}"]
     if trust_tracking and remote:
-        excl = ["--not", f"--remotes={remote}"]
-    else:
-        tips = _dest_tips(dest, cwd) if dest else []
-        excl = ["--not", *tips] if tips else []
-    return _git_out(["rev-list", local_sha, *excl], cwd).split()
+        return [local_sha, "--not", f"--remotes={remote}"]
+    tips = _dest_tips(dest, cwd) if dest else []
+    return [local_sha, "--not", *tips] if tips else [local_sha]
+
+
+def _new_commits(local_sha: str, remote_sha: str, remote: str, cwd: Optional[str],
+                 trust_tracking: bool = False, dest: str = "") -> List[str]:
+    """Commits this ref update brings to the destination (see range_words)."""
+    words = range_words(local_sha, remote_sha, remote, cwd, trust_tracking, dest)
+    return _git_out(["rev-list", *words], cwd).split()
+
+
+def open_targets(targets: Sequence[Tuple[Optional[str], bool]], vis: Dict[str, str]
+                 ) -> List[Tuple[Optional[str], bool]]:
+    """The push targets not proven to be a private GitHub repo; each counts
+    as public. Proven private needs a URL that provably reaches GitHub and
+    confirmed_private() (a fresh visibility list, or GitHub asked live)."""
+    return [(r, gh) for r, gh in targets if not (gh and r and confirmed_private(r, vis))]
+
+
+def tag_texts(sha: str, cwd: Optional[str]) -> List[str]:
+    """An annotated tag's raw object text (its tagger line and message, and
+    any tag it points at), or []. Raises when the object cannot be read."""
+    return _tag_texts(sha, cwd)
 
 
 def _git_out(args: Sequence[str], cwd: Optional[str]) -> str:
@@ -448,9 +468,8 @@ def check_push(targets: Sequence[Tuple[Optional[str], bool]], remote: str,
               f"list from {int((age or 0) // 3600)} h ago")
     vis = {} if why_stale else load_visibility()   # a failed refresh: trust no PRIVATE
     # Leave out destinations proven private; scan for the rest.
-    open_targets = [(r, gh) for r, gh in targets
-                    if not (gh and r and confirmed_private(r, vis))]
-    if not open_targets:
+    still_open = open_targets(targets, vis)
+    if not still_open:
         return True, []
     try:
         names = load_names()
@@ -467,9 +486,9 @@ def check_push(targets: Sequence[Tuple[Optional[str], bool]], remote: str,
     # "acme/secret-proj" is not the private one, and a second public
     # destination must not receive the name).
     mine = {o.lower() for o in who}
-    own = {r.lower() for r, gh in open_targets if gh and r}
+    own = {r.lower() for r, gh in still_open if gh and r}
     skip: Set[str] = set()
-    if len(own) == 1 and all(gh and r for r, gh in open_targets):
+    if len(own) == 1 and all(gh and r for r, gh in still_open):
         only = next(iter(own))
         if only.split("/")[0] in mine:
             skip = {only.split("/")[-1]}
