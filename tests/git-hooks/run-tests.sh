@@ -1420,14 +1420,16 @@ scan_setup() {
   cat >"$T/bin/scanner" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$@" >"$FAKE_SCAN_LOG"
+printf 'call %s\n' "$*" >>"$FAKE_SCAN_LOG.all"
 cat >"$FAKE_SCAN_LOG.stdin"
+[ -n "${FAKE_SCAN_SLEEP:-}" ] && sleep "$FAKE_SCAN_SLEEP"
 echo "fake scanner: called"
 exit "${FAKE_SCAN_EXIT:-0}"
 EOF
   chmod 755 "$T/bin/scanner"
   export FAKE_SCAN_LOG="$T/scan.log"
-  rm -f "$FAKE_SCAN_LOG"
-  unset FAKE_SCAN_EXIT GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
+  rm -f "$FAKE_SCAN_LOG" "$FAKE_SCAN_LOG.all"
+  unset FAKE_SCAN_EXIT FAKE_SCAN_SLEEP CI_POLICY_SCANNER_TIMEOUT GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 }
 # icommit FILE VAR=VALUE...: a commit on branch $B (w-<file>) with those
 # identity variables set for that one commit only.
@@ -1601,6 +1603,57 @@ printf 'garbled line\n' >"$HOME/.config/ci-policy/public-checks.txt"
 push origin "$B"
 assert_eq "$RC" 1 "(a kept copy that cannot be read: $OUT)"
 assert_contains "$OUT" "cannot read the line"
+teardown
+
+scan_setup "public scan: one scanner call per pushed ref; deletions are not scanned"
+git config --global --add ci-policy.publicPushScanner "$T/bin/scanner"
+git config --global --add ci-policy.forbiddenIdentity "jane.doe@example.org"
+git -C "$R" switch -q -c two-a main; echo a >"$R/a2.txt"; git -C "$R" add a2.txt; git -C "$R" commit -q --no-verify -m a
+git -C "$R" switch -q -c two-b main; echo b >"$R/b2.txt"; git -C "$R" add b2.txt; git -C "$R" commit -q --no-verify -m b
+push origin two-a two-b
+assert_eq "$RC" 0 "$OUT"
+assert_eq "$(grep -c '^call ' "$FAKE_SCAN_LOG.all")" 2 "(two refs, two scanner calls)"
+push origin :two-a
+assert_eq "$RC" 0 "(deleting a branch: $OUT)"
+assert_eq "$(grep -c '^call ' "$FAKE_SCAN_LOG.all")" 2 "(a deletion brings nothing, so no scanner call)"
+teardown
+
+scan_setup "public scan: a scanner that cannot start or hangs refuses the push"
+printf '#!/no/such/interpreter\n' >"$T/bin/broken"; chmod 755 "$T/bin/broken"
+git config --global --add ci-policy.publicPushScanner "$T/bin/broken"
+lcommit a.txt "plain" "plain"
+push origin "$B"
+assert_eq "$RC" 1 "(bad interpreter: $OUT)"
+assert_contains "$OUT" "could not run"
+git config --global --replace-all ci-policy.publicPushScanner "$T/bin/scanner"
+rm -f "$HOME/.config/ci-policy/public-checks.txt"
+export CI_POLICY_SCANNER_TIMEOUT=1 FAKE_SCAN_SLEEP=4
+push origin "$B"
+assert_eq "$RC" 1 "(a hung scanner: $OUT)"
+assert_contains "$OUT" "did not finish in 1 s"
+export CI_POLICY_SCANNER_TIMEOUT=99999 FAKE_SCAN_SLEEP=0
+push origin "$B"
+assert_eq "$RC" 0 "(the env can lower the limit, never break it: $OUT)"
+unset CI_POLICY_SCANNER_TIMEOUT FAKE_SCAN_SLEEP
+teardown
+
+scan_setup "public scan: a non-GitHub destination is never spared by the skip list"
+sshremote "git@example.org:acme/pubapp.git"
+git config --global --add ci-policy.publicPushScanner "$T/bin/scanner"
+git config --global --add ci-policy.publicPushScannerSkip "*"
+lcommit a.txt "plain" "plain"
+push origin "$B"
+assert_eq "$RC" 0 "$OUT"
+assert_contains "$OUT" "fake scanner: called" "(another host is scanned even with a * skip)"
+teardown
+
+scan_setup "public scan: a forbidden identity in a message matches without case"
+git config --global --add ci-policy.forbiddenIdentity "jane.doe@example.org"
+git -C "$R" switch -q -C w-case main
+echo x >"$R/t.txt"; git -C "$R" add t.txt
+git -C "$R" commit -q --no-verify -m "pair work" -m "Signed-off-by: J <JANE.DOE@EXAMPLE.ORG>"
+push origin w-case
+assert_eq "$RC" 1 "$OUT"
 teardown
 
 scan_setup "public scan: the skip list spares only destinations that all match it"

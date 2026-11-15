@@ -52,11 +52,26 @@ from typing import List, Optional, Sequence, Tuple
 from ci_policy import leak_guard
 from ci_policy.allowlist import redact
 
-ZERO = leak_guard.ZERO
 SCANNER_KEY = "ci-policy.publicPushScanner"
 IDENTITY_KEY = "ci-policy.forbiddenIdentity"
 SKIP_KEY = "ci-policy.publicPushScannerSkip"
 SCANNER_TIMEOUT = 900
+
+
+def scanner_timeout() -> int:
+    """SCANNER_TIMEOUT seconds; CI_POLICY_SCANNER_TIMEOUT may only lower it
+    (tests), never raise it, so an env var cannot make a hung scanner wait
+    longer than the documented limit."""
+    try:
+        want = int(os.environ.get("CI_POLICY_SCANNER_TIMEOUT", SCANNER_TIMEOUT))
+    except ValueError:
+        return SCANNER_TIMEOUT
+    return max(1, min(want, SCANNER_TIMEOUT))
+
+
+def is_zero(sha: str) -> bool:
+    """git's "no object" id: 40 zeros, or 64 in a SHA-256 repo."""
+    return bool(sha) and set(sha) == {"0"}
 MAX_HITS = 20
 FIELDS = ("author name", "author email", "committer name", "committer email")
 
@@ -203,9 +218,9 @@ def run_scanner(scanner: str, root: str, words: Sequence[str]) -> Optional[str]:
     try:
         p = subprocess.run([scanner, "--push", root, *words], cwd=root,
                            stdin=subprocess.DEVNULL, stdout=sys.stderr.fileno(),
-                           timeout=SCANNER_TIMEOUT)
+                           timeout=scanner_timeout())
     except subprocess.TimeoutExpired:
-        return f"{scanner} did not finish in {SCANNER_TIMEOUT} s"
+        return f"{scanner} did not finish in {scanner_timeout()} s"
     except OSError as e:
         return f"{scanner} could not run: {e}"
     if p.returncode != 0:
@@ -239,7 +254,7 @@ def check_push(targets: Sequence[Tuple[Optional[str], bool]], remote: str,
     found: List[str] = []
     root = repo_root(cwd) if scans else ""
     for _local_ref, local_sha, remote_ref, remote_sha in updates:
-        if not local_sha or local_sha == ZERO:
+        if not local_sha or is_zero(local_sha):
             continue                               # a deletion adds nothing
         words = leak_guard.range_words(local_sha, remote_sha, remote, cwd, trust_tracking, dest)
         if forbidden:

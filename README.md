@@ -315,7 +315,8 @@ the same user outside `~/workspace`) untouched.
     read live from the destination). Its stdin is empty and its output goes
     to the terminal. Exit 0 passes; any other exit refuses the push. It fails
     closed: a scanner that is missing, not executable, not an absolute path,
-    or still running after 15 minutes refuses the push, and `--check` reports
+    or still running after 15 minutes (`CI_POLICY_SCANNER_TIMEOUT` may only
+    lower that) refuses the push, and `--check` reports
     it as a problem.
   - `ci-policy.publicPushScannerSkip <owner/name glob>` (repeatable): the
     extra scanner is not run when every public destination is a GitHub repo
