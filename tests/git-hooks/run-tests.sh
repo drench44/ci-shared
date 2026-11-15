@@ -1548,6 +1548,28 @@ assert_eq "$RC" 0 "$OUT"
 assert_contains "$OUT" "fake scanner: called" "(a repo cannot switch the global scanner off)"
 teardown
 
+scan_setup "public scan: the skip list spares only destinations that all match it"
+git config --global --add ci-policy.publicPushScanner "$T/bin/scanner"
+git config --global --add ci-policy.forbiddenIdentity "jane.doe@example.org"
+export FAKE_SCAN_EXIT=1
+git config --global --add ci-policy.publicPushScannerSkip "ACME/pub*"
+lcommit a.txt "plain" "plain"
+push origin "$B"
+assert_eq "$RC" 0 "(a skipped destination: $OUT)"
+assert_contains "$OUT" "publicPushScanner skipped"
+icommit b.txt GIT_AUTHOR_EMAIL=jane.doe@example.org
+push origin "$B"
+assert_eq "$RC" 1 "(the identity check still runs on a skipped destination: $OUT)"
+icommit c.txt
+git -C "$R" remote set-url --add --push origin "git@github.com:acme/other.git"
+git -C "$R" remote set-url --add --push origin "git@github.com:acme/pubapp.git"
+export FAKE_NOW_PUBLIC="pubapp other"
+push origin "$B"
+assert_eq "$RC" 1 "(a second public destination off the list is scanned: $OUT)"
+assert_contains "$OUT" "refused this push"
+unset FAKE_SCAN_EXIT FAKE_NOW_PUBLIC
+teardown
+
 setup "public scan: on without a private owner configured"
 install
 mkdir -p "$T/bin"; printf '#!/usr/bin/env bash\nexit 1\n' >"$T/bin/gh"; chmod 755 "$T/bin/gh"

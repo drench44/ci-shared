@@ -21,13 +21,21 @@ lives in, or can be switched off by, the repo being pushed:
       the push. A configured scanner that is missing, not executable, not an
       absolute path, or that times out refuses the push too (fail closed).
 
-Neither is set by default; with neither set this module does nothing. Humans
+  ci-policy.publicPushScannerSkip <owner/name glob>   (repeatable)
+      Destinations the extra scanner is not run for, matched without regard
+      to case, for example "someone-else/*" for an upstream whose content is
+      not this machine's to police. The scanner is skipped only when EVERY
+      destination still counted as public is a GitHub repo matching one of
+      these. The identity check still runs there.
+
+Neither check is set by default; with neither set this module does nothing. Humans
 can break glass for one push with CI_POLICY_ALLOW_LEAK=1 (the same switch as
 the leak check).
 """
 
 from __future__ import annotations
 
+import fnmatch
 import os
 import subprocess
 import sys
@@ -39,6 +47,7 @@ from ci_policy.allowlist import redact
 ZERO = leak_guard.ZERO
 SCANNER_KEY = "ci-policy.publicPushScanner"
 IDENTITY_KEY = "ci-policy.forbiddenIdentity"
+SKIP_KEY = "ci-policy.publicPushScannerSkip"
 SCANNER_TIMEOUT = 900
 MAX_HITS = 20
 FIELDS = ("author name", "author email", "committer name", "committer email")
@@ -65,6 +74,14 @@ def scanners() -> List[str]:
 
 def identities() -> List[str]:
     return _global_all(IDENTITY_KEY)
+
+
+def scanner_skipped(still_open: Sequence[Tuple[Optional[str], bool]]) -> bool:
+    """Every public destination is a GitHub repo on the skip list."""
+    globs = [g.lower() for g in _global_all(SKIP_KEY)]
+    return bool(globs) and bool(still_open) and all(
+        is_github and repo and any(fnmatch.fnmatchcase(repo.lower(), g) for g in globs)
+        for repo, is_github in still_open)
 
 
 def repo_root(cwd: Optional[str]) -> str:
@@ -130,12 +147,19 @@ def check_push(targets: Sequence[Tuple[Optional[str], bool]], remote: str,
     try:
         scans = scanners()
         forbidden = identities()
+        if not scans and not forbidden:
+            return True, []
+        still_open = leak_guard.open_targets(targets, leak_guard.load_visibility())
+        if not still_open:
+            return True, []                        # every destination is private
+        if scans and scanner_skipped(still_open):
+            print(f"ci-policy pre-push: {SCANNER_KEY} skipped: every destination is on "
+                  f"{SKIP_KEY}", file=sys.stderr)
+            scans = []
     except ConfigError as e:
         return False, [f"cannot tell which public push checks are on: {e}"]
     if not scans and not forbidden:
         return True, []
-    if not leak_guard.open_targets(targets, leak_guard.load_visibility()):
-        return True, []                            # every destination is private
     where = ", ".join(r for r, _ in targets if r) or redact(remote) or "this remote"
     found: List[str] = []
     root = repo_root(cwd) if scans else ""

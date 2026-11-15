@@ -315,6 +315,11 @@ the same user outside `~/workspace`) untouched.
     closed: a scanner that is missing, not executable, not an absolute path,
     or still running after 15 minutes refuses the push, and `--check` reports
     it as a problem.
+  - `ci-policy.publicPushScannerSkip <owner/name glob>` (repeatable): the
+    extra scanner is not run when every public destination is a GitHub repo
+    matching one of these, ignoring case (for example a fork of someone
+    else's project whose existing content the scanner would always flag).
+    The identity check and the leak check still run there.
 
   `CI_POLICY_ALLOW_LEAK=1` breaks glass for one push. A repo whose own
   pre-push hook runs the same scanner scans twice; that is slower, never
