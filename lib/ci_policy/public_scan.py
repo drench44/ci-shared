@@ -101,7 +101,7 @@ def commit_identities(words: Sequence[str], cwd: Optional[str]
     out = leak_guard._git_out(["-c", "log.showSignature=false", "log", "--no-color",
                                "--format=%H%x00%an%x00%ae%x00%cn%x00%ce", *words, "--"], cwd)
     found = []
-    for line in out.splitlines():
+    for line in out.split("\n"):
         if not line:
             continue
         parts = line.split("\0")
