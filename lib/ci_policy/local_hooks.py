@@ -10,7 +10,9 @@ allow-check  The same allowlist test for a push that has not happened yet, used
              by the Claude Code push guard. It does not run the leak check;
              the pre-push hook does that when the push happens.
 pre-push also refuses a push to a public repo that names a private repo (see
-             leak_guard.py; list kept on the machine only).
+             leak_guard.py; list kept on the machine only), and, when this
+             machine configures them, runs the public push checks of
+             public_scan.py (forbidden commit identities, an extra scanner).
 refresh-private  Rewrite that local list from GitHub.
 tidy         Delete local branches whose PR merged (see branch_tidy.py). The
              post-merge hook runs it, so a `git pull` cleans up.
@@ -42,7 +44,7 @@ import sys
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-from ci_policy import allowlist, branch_tidy, leak_guard
+from ci_policy import allowlist, branch_tidy, leak_guard, public_scan
 from ci_policy.globs import GlobSet
 from ci_policy.pr_policy import gitattributes_globs
 
@@ -770,9 +772,10 @@ def pre_push(remote: str, url: str, lines: Iterable[str], cwd: Optional[str] = N
     fetched = set(fetch_urls(remote, cwd))
     trust_tracking = bool(fetched) and all(d.url in fetched for d in target.dests)
     # Private stays private: a push to a public repo must not name a private one.
-    ok, why = leak_guard.check_push([(d.repo, d.reaches) for d in target.away], remote, every,
-                                    cwd, trust_tracking=trust_tracking,
-                                    dest=url or target.dests[0].url)
+    away = [(d.repo, d.reaches) for d in target.away]
+    dest = url or target.dests[0].url
+    ok, why = leak_guard.check_push(away, remote, every, cwd, trust_tracking=trust_tracking,
+                                    dest=dest)
     if not ok:
         if os.environ.get("CI_POLICY_ALLOW_LEAK") == "1":
             print("ci-policy pre-push: WARNING: CI_POLICY_ALLOW_LEAK=1, pushing anyway:\n"
@@ -781,6 +784,18 @@ def pre_push(remote: str, url: str, lines: Iterable[str], cwd: Optional[str] = N
             print("ci-policy pre-push: BLOCKED: " + "\n".join(why) + "\n"
                   "  Remove the names (reword the commit), or push to a private repo.",
                   file=sys.stderr)
+            return 1
+    # This machine's own checks on public pushes (identities, an extra scanner).
+    ok, why = public_scan.check_push(away, remote, every, cwd, trust_tracking=trust_tracking,
+                                     dest=dest)
+    if not ok:
+        if os.environ.get("CI_POLICY_ALLOW_LEAK") == "1":
+            print("ci-policy pre-push: WARNING: CI_POLICY_ALLOW_LEAK=1, pushing anyway:\n"
+                  + "\n".join(why), file=sys.stderr)
+        else:
+            print("ci-policy pre-push: BLOCKED: " + "\n".join(why) + "\n"
+                  "  Fix the commits (git commit --amend --reset-author, or rebase), or push "
+                  "to a private repo.", file=sys.stderr)
             return 1
     if not updates:
         return 0

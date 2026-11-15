@@ -35,6 +35,16 @@
 #   --private-owner O repeatable; turn on the private-name leak check for
 #                     pushes to public repos (ci-policy.privateOwner) and
 #                     fetch the name list (needs gh)
+#   --public-push-scanner PATH
+#                     repeatable; an absolute path to an extra scanner run on
+#                     every push to a public destination, as
+#                     PATH --push <repo> <rev-list words...> (exit 0 = clean).
+#                     Stored as ci-policy.publicPushScanner in ~/.gitconfig
+#   --forbid-identity TEXT
+#                     repeatable; refuse a push to a public destination when a
+#                     pushed commit's author or committer name or email (or a
+#                     tag) contains TEXT, ignoring case
+#                     (ci-policy.forbiddenIdentity in ~/.gitconfig)
 #   --force           replace a core.hooksPath or hooks directory not made by ci-policy
 #   --dry-run         print what would change, change nothing
 set -euo pipefail
@@ -56,6 +66,8 @@ HOOKS_DIR="$HOME/.config/git/hooks"
 SCOPES=()
 SCANS=()
 OWNERS=()
+SCANNERS=()
+IDENTITIES=()
 MODE=install
 FORCE=0
 DRY=0
@@ -81,6 +93,8 @@ while (($#)); do
     --check) MODE=check; shift ;;
     --uninstall) MODE=uninstall; shift ;;
     --private-owner) OWNERS+=("${2:?}"); shift 2 ;;
+    --public-push-scanner) SCANNERS+=("$(abspath "${2:?}")"); shift 2 ;;
+    --forbid-identity) IDENTITIES+=("${2:?}"); shift 2 ;;
     --force) FORCE=1; shift ;;
     --dry-run) DRY=1; shift ;;
     -h|--help) sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
@@ -249,6 +263,26 @@ setup_leak_guard() {
   fi
 }
 
+# Machine-local checks on public pushes (lib/ci_policy/public_scan.py). Both
+# live in the global git config only, never in a repo.
+setup_public_scan() {
+  local s i n m
+  for s in ${SCANNERS[@]+"${SCANNERS[@]}"}; do
+    [[ -f "$s" && -x "$s" ]] || die "--public-push-scanner $s is missing or not executable"
+    git config --global --get-all ci-policy.publicPushScanner 2>/dev/null | grep -qxF -- "$s" \
+      || run git config --global --add ci-policy.publicPushScanner "$s"
+  done
+  for i in ${IDENTITIES[@]+"${IDENTITIES[@]}"}; do
+    git config --global --get-all ci-policy.forbiddenIdentity 2>/dev/null | grep -qxF -- "$i" \
+      || run git config --global --add ci-policy.forbiddenIdentity "$i"
+  done
+  n=$(git config --global --get-all ci-policy.publicPushScanner 2>/dev/null | grep -c . || true)
+  m=$(git config --global --get-all ci-policy.forbiddenIdentity 2>/dev/null | grep -c . || true)
+  if ((n + m)); then
+    say "public push checks on: $n extra scanner(s), $m forbidden identity value(s)"
+  fi
+}
+
 migrate_repos() {
   local repo local_path
   while IFS= read -r repo; do
@@ -273,6 +307,7 @@ do_install() {
   point_git_at_hooks
   setup_tidy
   setup_leak_guard
+  setup_public_scan
   migrate_repos
   say "installed $(sed -n 's/^commit=//p' "$PREFIX/installed.txt" 2>/dev/null || echo '(dry run)') to $PREFIX"
 }
@@ -327,6 +362,16 @@ do_check() {
   else
     say "PROBLEM: git is not pointed at $HOOKS_DIR"; problems=1
   fi
+  local s
+  while IFS= read -r s; do
+    [[ -n "$s" ]] || continue
+    if [[ "$s" != /* || ! -f "$s" || ! -x "$s" ]]; then
+      say "PROBLEM: ci-policy.publicPushScanner $s is missing, not executable or not absolute, so every push to a public repo is refused"
+      problems=1
+    else
+      say "public push scanner: $s"
+    fi
+  done < <(git config --global --type=path --get-all ci-policy.publicPushScanner 2>/dev/null || true)
   local scoped
   while IFS= read -r repo; do
     [[ -n "$repo" ]] || continue
