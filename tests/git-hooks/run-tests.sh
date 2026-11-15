@@ -1465,6 +1465,13 @@ assert_eq "$RC" 1 "(committer name: $OUT)"
 icommit e.txt GIT_AUTHOR_EMAIL=someone@example.org
 push origin "$B"
 assert_eq "$RC" 0 "(a clean identity: $OUT)"
+git config --global --add ci-policy.forbiddenIdentity "jdoe@"
+icommit f.txt GIT_COMMITTER_EMAIL=jdoe@laptop7.lan
+push origin "$B"
+assert_eq "$RC" 1 "(a made-up login@host address: $OUT)"
+icommit g.txt GIT_AUTHOR_EMAIL=1234+jdoe42@users.noreply.example
+push origin "$B"
+assert_eq "$RC" 0 "(login@ does not match a longer login: $OUT)"
 teardown
 
 scan_setup "public scan: a bad identity in the middle of a push is refused; glass breaks"

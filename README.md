@@ -303,8 +303,10 @@ the same user outside `~/workspace`) untouched.
     `<text>`, ignoring case, in its author name, author email, committer
     name or committer email (the raw values GitHub shows, not `.mailmap`'s),
     and no pushed annotated tag may contain it in its tagger line or
-    message. Content scans never see these fields. A typical value is a
-    personal email address that must never become a public commit's author.
+    message. Content scans never see these fields. Typical values are a
+    personal email address, or `<login>@`, which catches the `login@host.lan`
+    address git makes up on a machine with no `user.email` set. It still
+    runs on destinations the skip list below spares.
   - `ci-policy.publicPushScanner <absolute path>` (repeatable, or
     `--public-push-scanner <path>` at install): runs once per pushed ref as
     `<path> --push <repo top level> <rev-list words...>`, where the words name
