@@ -301,9 +301,9 @@ the same user outside `~/workspace`) untouched.
   - `ci-policy.forbiddenIdentity <text>` (repeatable, or
     `--forbid-identity <text>` at install): no pushed commit may contain
     `<text>`, ignoring case, in its author name, author email, committer
-    name or committer email (the raw values GitHub shows, not `.mailmap`'s),
-    and no pushed annotated tag may contain it in its tagger line or
-    message. Content scans never see these fields. Typical values are a
+    name, committer email (the raw values GitHub shows, not `.mailmap`'s)
+    or message (so a `Co-authored-by` trailer counts), and no pushed
+    annotated tag may contain it in its tagger line or message. Content scans never see these fields. Typical values are a
     personal email address, or `<login>@`, which catches the `login@host.lan`
     address git makes up on a machine with no `user.email` set. It still
     runs on destinations the skip list below spares.
@@ -322,6 +322,15 @@ the same user outside `~/workspace`) untouched.
     matching one of these, ignoring case (for example a fork of someone
     else's project whose existing content the scanner would always flag).
     The identity check and the leak check still run there.
+
+  Once configured, the scanners and identities are also kept in
+  `~/.config/ci-policy/public-checks.txt` (mode 600, kept by a reinstall),
+  like the leak check's `owners.txt`, and the hook enforces the union of the
+  two. Unsetting the git config alone (a fresh dotfile, a stray `--unset`)
+  therefore never turns a check off silently; `--check` notes a kept value
+  the git config lost. Turning one off means removing it from both. A blank
+  `publicPushScanner` value or a kept file that cannot be read refuses the
+  push.
 
   `CI_POLICY_ALLOW_LEAK=1` breaks glass for one push. A repo whose own
   pre-push hook runs the same scanner scans twice; that is slower, never

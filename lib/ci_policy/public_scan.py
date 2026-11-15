@@ -8,9 +8,10 @@ lives in, or can be switched off by, the repo being pushed:
 
   ci-policy.forbiddenIdentity <text>   (repeatable)
       No pushed commit may carry <text> (case-insensitive substring) in its
-      author name, author email, committer name or committer email, and no
-      pushed annotated tag may carry it anywhere (tagger line or message).
-      GitHub shows all of these, and no content scan sees them.
+      author name, author email, committer name, committer email or message
+      (trailers such as Co-authored-by included), and no pushed annotated tag
+      may carry it anywhere (tagger line or message). GitHub shows all of
+      these, and no content scan sees the identities.
 
   ci-policy.publicPushScanner <absolute path>   (repeatable)
       An extra scanner run once per pushed ref as
@@ -27,6 +28,13 @@ lives in, or can be switched off by, the repo being pushed:
       not this machine's to police. The scanner is skipped only when EVERY
       destination still counted as public is a GitHub repo matching one of
       these. The identity check still runs there.
+
+Once either is configured, its values are also kept in
+~/.config/ci-policy/public-checks.txt (mode 600), the way the leak check keeps
+owners.txt, and the checks use the union of the two: unsetting the git config
+alone (a fresh dotfile, a stray --unset) never turns them off silently.
+Turning one off means removing it from both. A blank publicPushScanner value
+or an unreadable kept file refuses the push.
 
 Neither check is set by default; with neither set this module does nothing. Humans
 can break glass for one push with CI_POLICY_ALLOW_LEAK=1 (the same switch as
@@ -57,7 +65,7 @@ class ConfigError(Exception):
     """The global git config could not be read: the checks must not turn off."""
 
 
-def _global_all(key: str, path: bool = False) -> List[str]:
+def _global_all(key: str, path: bool = False, blank_ok: bool = True) -> List[str]:
     args = ["git", "config", "--global"] + (["--type=path"] if path else []) + ["--get-all", key]
     p = subprocess.run(args, capture_output=True, text=True, errors="replace")
     if p.returncode == 1:
@@ -65,15 +73,81 @@ def _global_all(key: str, path: bool = False) -> List[str]:
     if p.returncode != 0:
         raise ConfigError(f"git config --global --get-all {key} failed: "
                           + (p.stderr.strip()[:200] or f"exit {p.returncode}"))
-    return [l.strip() for l in p.stdout.splitlines() if l.strip()]
+    lines = p.stdout.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    if not blank_ok and any(not l.strip() for l in lines):
+        raise ConfigError(f"{key} has an empty value; set a path or remove it")
+    return [l.strip() for l in lines if l.strip()]
+
+
+def kept_path() -> str:
+    """The kept copy of the configured checks, like the leak check's
+    owners.txt: unsetting the git config alone does not turn them off."""
+    return os.path.join(leak_guard.config_dir(), "public-checks.txt")
+
+
+def _read_kept() -> Tuple[List[str], List[str]]:
+    path = kept_path()
+    if not os.path.lexists(path):
+        return [], []
+    scans: List[str] = []
+    ids: List[str] = []
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.rstrip("\n")
+                if not line or line.startswith("#"):
+                    continue
+                kind, _, value = line.partition(" ")
+                if kind == "scanner" and value:
+                    scans.append(value)
+                elif kind == "identity" and value:
+                    ids.append(value)
+                else:
+                    raise ConfigError(f"{path}: cannot read the line {line[:80]!r}")
+    except (OSError, UnicodeDecodeError) as e:
+        raise ConfigError(f"cannot read {path}: {e}") from None
+    return scans, ids
+
+
+def _union(a: Sequence[str], b: Sequence[str], fold: bool) -> List[str]:
+    out: List[str] = []
+    seen = set()
+    for v in [*a, *b]:
+        k = v.lower() if fold else v
+        if k not in seen:
+            seen.add(k)
+            out.append(v)
+    return out
+
+
+def configured() -> Tuple[List[str], List[str]]:
+    """(scanners, forbidden identities): the global git config plus the kept
+    copy, and the kept copy is brought up to date with the config. Raises
+    ConfigError when either cannot be read."""
+    cfg_scans = _global_all(SCANNER_KEY, path=True, blank_ok=False)
+    cfg_ids = _global_all(IDENTITY_KEY)
+    kept_scans, kept_ids = _read_kept()
+    scans = _union(cfg_scans, kept_scans, fold=False)
+    ids = _union(cfg_ids, kept_ids, fold=True)
+    if (scans, ids) != (kept_scans, kept_ids) and (scans or ids):
+        try:
+            leak_guard._write_private(kept_path(), "# ci-policy public push checks; delete this "
+                                      "file AND the git config to turn them off\n"
+                                      + "".join(f"scanner {s}\n" for s in scans)
+                                      + "".join(f"identity {i}\n" for i in ids))
+        except OSError as e:
+            raise ConfigError(f"cannot write {kept_path()}: {e}") from None
+    return scans, ids
 
 
 def scanners() -> List[str]:
-    return _global_all(SCANNER_KEY, path=True)
+    return configured()[0]
 
 
 def identities() -> List[str]:
-    return _global_all(IDENTITY_KEY)
+    return configured()[1]
 
 
 def scanner_skipped(still_open: Sequence[Tuple[Optional[str], bool]]) -> bool:
@@ -95,20 +169,22 @@ def repo_root(cwd: Optional[str]) -> str:
 
 def commit_identities(words: Sequence[str], cwd: Optional[str]
                       ) -> List[Tuple[str, str, str]]:
-    """(sha, field, value) for the four identity fields of every commit the
-    rev-list words name. Raw values (%an, not %aN): .mailmap does not change
-    what GitHub shows. A git failure raises."""
+    """(sha, field, value) for the four identity fields and the full message
+    of every commit the rev-list words name (a Co-authored-by or
+    Signed-off-by trailer is published too). Raw values (%an, not %aN):
+    .mailmap does not change what GitHub shows. A git failure raises."""
     out = leak_guard._git_out(["-c", "log.showSignature=false", "log", "--no-color",
-                               "--format=%H%x00%an%x00%ae%x00%cn%x00%ce", *words, "--"], cwd)
+                               "--format=%x01%H%x00%an%x00%ae%x00%cn%x00%ce%x00%B",
+                               *words, "--"], cwd)
     found = []
-    for line in out.split("\n"):
-        if not line:
+    for rec in out.split("\x01"):
+        if not rec.strip("\n"):
             continue
-        parts = line.split("\0")
-        if len(parts) != 5:
-            raise RuntimeError(f"cannot read the identity of a commit: {line[:80]!r}")
+        parts = rec.split("\0", 5)
+        if len(parts) != 6:
+            raise RuntimeError(f"cannot read the identity of a commit: {rec[:80]!r}")
         sha, *values = parts
-        found.extend((sha, f, v) for f, v in zip(FIELDS, values))
+        found.extend((sha, f, v.rstrip("\n")) for f, v in zip(FIELDS + ("message",), values))
     return found
 
 
@@ -145,8 +221,7 @@ def check_push(targets: Sequence[Tuple[Optional[str], bool]], remote: str,
     if not targets:
         return True, []                            # only paths on this machine
     try:
-        scans = scanners()
-        forbidden = identities()
+        scans, forbidden = configured()
         if not scans and not forbidden:
             return True, []
         still_open = leak_guard.open_targets(targets, leak_guard.load_visibility())
@@ -170,7 +245,11 @@ def check_push(targets: Sequence[Tuple[Optional[str], bool]], remote: str,
         if forbidden:
             for sha, field, value in commit_identities(words, cwd):
                 hit = _matches(value, forbidden)
-                if hit:
+                if hit and field == "message":
+                    line = next(l for l in value.split("\n") if hit.lower() in l.lower())
+                    found.append(f"commit {sha[:9]} message line {line[:120]!r} matches "
+                                 f"{IDENTITY_KEY} {hit!r}")
+                elif hit:
                     found.append(f"commit {sha[:9]} {field} {value!r} matches "
                                  f"{IDENTITY_KEY} {hit!r}")
             for text in leak_guard.tag_texts(local_sha, cwd):

@@ -1543,6 +1543,7 @@ push origin "$B"
 assert_eq "$RC" 1 "(relative scanner path: $OUT)"
 assert_contains "$OUT" "not an absolute path"
 git config --global --unset-all ci-policy.publicPushScanner
+rm -f "$HOME/.config/ci-policy/public-checks.txt"
 git -C "$R" config ci-policy.publicPushScanner "$T/bin/no-such-scanner"
 git -C "$R" config ci-policy.forbiddenIdentity "t@example.com"
 push origin "$B"
@@ -1553,6 +1554,53 @@ printf 'more\n' >>"$R/a.txt"; git -C "$R" add a.txt; git -C "$R" commit -q --no-
 push origin "$B"
 assert_eq "$RC" 0 "$OUT"
 assert_contains "$OUT" "fake scanner: called" "(a repo cannot switch the global scanner off)"
+teardown
+
+scan_setup "public scan: a forbidden identity in a message trailer is refused"
+git config --global --add ci-policy.forbiddenIdentity "jane.doe@example.org"
+git -C "$R" switch -q -C w-trailer main
+echo x >"$R/t.txt"; git -C "$R" add t.txt
+git -C "$R" commit -q --no-verify -m "pair work" -m "Co-authored-by: Jane <jane.doe@example.org>"
+push origin w-trailer
+assert_eq "$RC" 1 "$OUT"
+assert_contains "$OUT" "message line 'Co-authored-by: Jane <jane.doe@example.org>'"
+teardown
+
+scan_setup "public scan: unsetting the git config alone does not turn the checks off"
+git config --global --add ci-policy.forbiddenIdentity "jane.doe@example.org"
+git config --global --add ci-policy.publicPushScanner "$T/bin/scanner"
+lcommit a.txt "plain" "plain"
+push origin "$B"
+assert_eq "$RC" 0 "(first push records the checks: $OUT)"
+assert_eq "$(stat -c %a "$HOME/.config/ci-policy/public-checks.txt" 2>/dev/null || stat -f %Lp "$HOME/.config/ci-policy/public-checks.txt")" "600"
+git config --global --unset-all ci-policy.forbiddenIdentity
+git config --global --unset-all ci-policy.publicPushScanner
+icommit b.txt GIT_AUTHOR_EMAIL=jane.doe@example.org
+push origin "$B"
+assert_eq "$RC" 1 "(the kept identity still blocks: $OUT)"
+assert_contains "$OUT" "fake scanner: called" "(the kept scanner still runs)"
+install --check
+assert_contains "$OUT" "public push scanner: $T/bin/scanner"
+assert_contains "$OUT" "still enforced"
+install
+push origin "$B"
+assert_eq "$RC" 1 "(a reinstall keeps the kept copy: $OUT)"
+rm "$HOME/.config/ci-policy/public-checks.txt"
+push origin "$B"
+assert_eq "$RC" 0 "(off once both are removed: $OUT)"
+teardown
+
+scan_setup "public scan: a blank scanner value or an unreadable kept copy refuses"
+git config --global --add ci-policy.publicPushScanner ""
+lcommit a.txt "plain" "plain"
+push origin "$B"
+assert_eq "$RC" 1 "(blank scanner: $OUT)"
+assert_contains "$OUT" "empty value"
+git config --global --unset-all ci-policy.publicPushScanner
+printf 'garbled line\n' >"$HOME/.config/ci-policy/public-checks.txt"
+push origin "$B"
+assert_eq "$RC" 1 "(a kept copy that cannot be read: $OUT)"
+assert_contains "$OUT" "cannot read the line"
 teardown
 
 scan_setup "public scan: the skip list spares only destinations that all match it"

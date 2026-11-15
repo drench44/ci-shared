@@ -166,7 +166,7 @@ EOF
   # The leak check's machine-only lists live here too: keep them, or a
   # reinstall would forget the owners (and turn the check off).
   local keep
-  for keep in owners.txt private-names.txt visibility.json private-allowlist.json; do
+  for keep in owners.txt private-names.txt visibility.json private-allowlist.json public-checks.txt; do
     [[ -f "$PREFIX/$keep" ]] && cp -p "$PREFIX/$keep" "$tmp/$keep"
   done
   rm -rf "$PREFIX.old"
@@ -371,7 +371,16 @@ do_check() {
     else
       say "public push scanner: $s"
     fi
-  done < <(git config --global --type=path --get-all ci-policy.publicPushScanner 2>/dev/null || true)
+  done < <({ git config --global --type=path --get-all ci-policy.publicPushScanner 2>/dev/null || true
+             sed -n 's/^scanner //p' "$PREFIX/public-checks.txt" 2>/dev/null || true; } | awk '!seen[$0]++')
+  # The kept copy says which checks were configured; one missing from the git
+  # config is still enforced (the hook uses the union), so say so.
+  local kept
+  while IFS= read -r kept; do
+    [[ -n "$kept" ]] || continue
+    git config --global --get-all ci-policy.forbiddenIdentity 2>/dev/null | grep -qixF -- "$kept" \
+      || say "note: a forbidden identity kept in $PREFIX/public-checks.txt is not in the git config; it is still enforced"
+  done < <(sed -n 's/^identity //p' "$PREFIX/public-checks.txt" 2>/dev/null || true)
   local scoped
   while IFS= read -r repo; do
     [[ -n "$repo" ]] || continue
