@@ -1542,7 +1542,9 @@ push origin "$B"
 assert_eq "$RC" 0 "(repo-local config is ignored: only the global config counts: $OUT)"
 git config --global --add ci-policy.publicPushScanner "$T/bin/scanner"
 git -C "$R" config ci-policy.publicPushScanner ""
+printf 'more\n' >>"$R/a.txt"; git -C "$R" add a.txt; git -C "$R" commit -q --no-verify -m two
 push origin "$B"
+assert_eq "$RC" 0 "$OUT"
 assert_contains "$OUT" "fake scanner: called" "(a repo cannot switch the global scanner off)"
 teardown
 
