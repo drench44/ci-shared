@@ -6,7 +6,7 @@
 #   deps/<svc>               services <svc> depends_on, one per line. Real
 #                            "compose config --images <svc>" lists THEIR images
 #                            too, and this stub lists them FIRST (the order
-#                            that tagged house-climate's web image as the db
+#                            that tagged a project's web image as the db
 #                            image on 2026-09-23).
 #   project                  compose project name (default "hub")
 #   config_json              if present, printed as-is for "config --format json"

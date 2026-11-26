@@ -696,12 +696,12 @@ teardown
 
 # --- the image a service runs (2.2.1) -----------------------------------------
 # `compose config --images web` also lists the images of what web depends_on,
-# in no set order. On 2026-09-23 house-climate's web came back with the db
+# in no set order. On 2026-09-23 a project's web came back with the db
 # image first, so the running WEB image was tagged timescale/timescaledb:pre-...
 
-setup "a depends_on image listed first is never taken for the service's image (house-climate shape)"
+setup "a depends_on image listed first is never taken for the service's image (the shape that bit on 2026-09-23)"
 printf 'db\npoller\nweb\n' >"$STUB_STATE/services"
-echo "house-climate" >"$STUB_STATE/project"
+echo "demo-stack" >"$STUB_STATE/project"
 echo "timescale/timescaledb:2.29.1-pg16" >"$STUB_STATE/images/db"
 : >"$STUB_STATE/images/web"; : >"$STUB_STATE/images/poller"   # build-only, like the real ones
 echo db >"$STUB_STATE/deps/web"; echo db >"$STUB_STATE/deps/poller"
@@ -714,13 +714,13 @@ assert_eq "$first" "timescale/timescaledb:2.29.1-pg16" "(stub lists the dependen
 printf 'fail\nok {"ok":true}\n' >"$STUB_STATE/health"
 run_deploy "DL_SERVICES='poller web'" DL_HEALTH_TIMEOUT=0 DL_TAG_PUSH=0
 assert_eq "$RC" 1 "$OUT"
-assert_contains "$OUT" "rollback point: web runs house-climate-web:$PRE"
-assert_contains "$OUT" "rollback point: poller runs house-climate-poller:$PRE"
-assert_eq "$(cat "$STUB_STATE/tags/house-climate-web_$PRE" 2>/dev/null)" "sha256:OLDID" "(web's own image is tagged)"
+assert_contains "$OUT" "rollback point: web runs demo-stack-web:$PRE"
+assert_contains "$OUT" "rollback point: poller runs demo-stack-poller:$PRE"
+assert_eq "$(cat "$STUB_STATE/tags/demo-stack-web_$PRE" 2>/dev/null)" "sha256:OLDID" "(web's own image is tagged)"
 assert_not_contains "$(ls "$STUB_STATE/tags")" "timescale_timescaledb_pre-"
-assert_contains "$CALLS" "docker tag house-climate-web:$PRE house-climate-web:latest"
+assert_contains "$CALLS" "docker tag demo-stack-web:$PRE demo-stack-web:latest"
 assert_eq "$(cat "$STUB_STATE/tags/timescale_timescaledb_2.29.1-pg16")" "sha256:DBID" "(the database image name is left alone)"
-assert_eq "$(cat "$STUB_STATE/tags/house-climate-web_latest")" "sha256:OLDID" "(web rolled back onto its own old image)"
+assert_eq "$(cat "$STUB_STATE/tags/demo-stack-web_latest")" "sha256:OLDID" "(web rolled back onto its own old image)"
 assert_contains "$CALLS" "docker compose config --no-env-resolution --format json web"
 assert_not_contains "$CALLS" "config --images"
 teardown
@@ -799,14 +799,14 @@ assert_eq "$(cat "$STUB_STATE/tags/hub-web_$PRE")" "sha256:OLDID"
 teardown
 
 setup "the image name comes over ssh for a remote box too"
-echo "house-climate" >"$STUB_STATE/project"; : >"$STUB_STATE/images/web"
+echo "demo-stack" >"$STUB_STATE/project"; : >"$STUB_STATE/images/web"
 printf 'db\nweb\n' >"$STUB_STATE/services"; echo "timescale/timescaledb:2.29.1-pg16" >"$STUB_STATE/images/db"
 echo db >"$STUB_STATE/deps/web"
 mkdir -p "$T/home/box"
 run_deploy DL_REMOTE=box "HOME='$T/home'" "DL_COMPOSE_DIR='~/box'" DL_SERVICES=web DL_TAG_PUSH=0
 assert_eq "$RC" 0 "$OUT"
 assert_contains "$CALLS" "ssh box cd ~/box && docker compose config --no-env-resolution --format json web"
-assert_contains "$OUT" "rollback point: web runs house-climate-web:$PRE"
+assert_contains "$OUT" "rollback point: web runs demo-stack-web:$PRE"
 teardown
 
 # --- pruning old pre- tags ------------------------------------------------------

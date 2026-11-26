@@ -212,7 +212,6 @@ list GitHub truncated (300 files or more) never matches.
 | Repo | Automation | Rule |
 | --- | --- | --- |
 | family-hub | `scripts/release.py`, pushed by hand with `git push --follow-tags` | subject `release: vX.Y.Z`, only `VERSION`, `CHANGELOG.md`, `src/family_hub/web/static/index.html` |
-| house-climate | `scripts/release.py`, same flow | subject `release: vX.Y.Z`, only `VERSION`, `CHANGELOG.md` and the three pages it stamps: `src/house_climate/web/static/index.html`, `moisture.html`, `square.html` (a new page needs a line here) |
 
 Every other automation pushes feature branches and lands through PRs
 (scheduled bots, Dependabot). Nothing else
@@ -339,7 +338,7 @@ the same user outside `~/workspace`) untouched.
 - **Chaining.** `core.hooksPath` makes git ignore `.git/hooks`, which would
   silently turn off each repo's own hooks. Every wrapper runs the repo's hook
   of the same name after the policy passes, with the same arguments and stdin.
-  Repos that set their own `core.hooksPath` (family-hub and house-climate use
+  Repos that set their own `core.hooksPath` (family-hub and some private repos use
   `.githooks`) would otherwise
   shadow the global setting, so the installer moves that value to
   `ci-policy.chainHooksPath` and the dispatcher chains there. `--check` finds
