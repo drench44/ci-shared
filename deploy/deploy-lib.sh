@@ -244,7 +244,7 @@ _dl_split_image() {
 # and returns 1 when there is no single answer.
 #
 # Never `config --images <svc>`: it also lists the images of the services
-# <svc> depends_on, in no set order. On 2026-09-23 it answered house-climate's
+# <svc> depends_on, in no set order. On 2026-09-23 it answered a project's
 # web with the database image first, so the running WEB image was tagged
 # timescale/timescaledb:pre-..., and a rollback would have retagged the
 # database's image name onto the old web image.

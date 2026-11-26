@@ -1005,11 +1005,21 @@ class MainTests(unittest.TestCase):
         self.assertEqual(code, 1, summary)
         self.assertIn("ignore-checks left none", summary)
 
-    def test_house_climate_page_not_listed_is_refused(self):
-        path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                            "policy", "main-allowlist.json")
-        hc = "/repos/drench44/house-climate"
-        base = "src/house_climate/web/static/"
+    def test_release_page_not_listed_is_refused(self):
+        # A neutral repo name and a file written here: the shared policy file
+        # never names a private repo, so the rule shape is exercised on its own.
+        rule = {"name": "release script", "branch": "main",
+                "subject": r"^release: v\d+\.\d+\.\d+$",
+                "paths": ["VERSION", "CHANGELOG.md",
+                          "src/example_app/web/static/index.html",
+                          "src/example_app/web/static/square.html"]}
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = os.path.join(tmp.name, "allowlist.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"repos": {"drench44/example-app": [rule]}}, f)
+        hc = "/repos/drench44/example-app"
+        base = "src/example_app/web/static/"
         for page, want in (("square.html", 0), ("new.html", 1)):
             with self.subTest(page=page):
                 routes = {f"GET {hc}/compare/{A}...{C}": {
@@ -1021,7 +1031,7 @@ class MainTests(unittest.TestCase):
                           f"GET {hc}/issues": [], f"POST {hc}/labels": {},
                           f"POST {hc}/issues": {"number": 8}}
                 code, summary, _, _ = self.run_main(routes, event(), {"allowlist-file": path},
-                                                    repo="drench44/house-climate")
+                                                    repo="drench44/example-app")
                 self.assertEqual(code, want, summary)
 
     def repo_rules_routes(self, **kw):

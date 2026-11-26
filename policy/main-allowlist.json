@@ -12,20 +12,6 @@
           "src/family_hub/web/static/index.html"
         ]
       }
-    ],
-    "drench44/house-climate": [
-      {
-        "name": "release script (scripts/release.py, pushed by hand with git push --follow-tags)",
-        "branch": "main",
-        "subject": "^release: v\\d+\\.\\d+\\.\\d+$",
-        "paths": [
-          "VERSION",
-          "CHANGELOG.md",
-          "src/house_climate/web/static/index.html",
-          "src/house_climate/web/static/moisture.html",
-          "src/house_climate/web/static/square.html"
-        ]
-      }
     ]
   }
 }
